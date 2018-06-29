@@ -1,6 +1,6 @@
 {
   "version": "0.0.0",
-  "name": "node-dgram",
+  "name": "@libdweb/node-dgram",
   "description": "Node dgram module adapter for libdweb",
   "keywords": [
     "node-dgram",
@@ -10,8 +10,7 @@
   "main": "lib/node-dgram",
   "module": "src/node-dgram",
   "unpkg": "dist/node-dgram",
-  "author": "Irakli Gozalishvili <rfobic@gmail.com> (http://jeditoolkit.com)",
-  "repository": "https://github.com/Gozala/node-dgram",
+  "repository": "https://github.com/libdweb/node-dgram",
   "license": "MIT",
   "devDependencies": {
     "alias-quokka-plugin": "^0.1.0",
