@@ -83,6 +83,7 @@ export default (lib: Lib) => {
     isIdle: boolean
     _bindState: BindState
     _reuseAddr: boolean
+    dns: { resolve(string): Promise<{ addresses: string[] }> }
     workQueue: Task[]
     type: SocketType
     listener: ?MessageListener
@@ -92,15 +93,15 @@ export default (lib: Lib) => {
     ) {
       super()
 
-      let lookup
-
       if (type !== null && typeof type === "object") {
         var options = type
         this.type = options.type
-        lookup = options.lookup
+        this.dns = options.lookup ? fromNodeLookup(options.lookup) : lib.dns
         this._reuseAddr = !!options.reuseAddr
       } else {
+        this._reuseAddr = false
         this.type = type
+        this.dns = lib.dns
       }
 
       if (typeof listener === "function") {
@@ -166,8 +167,6 @@ export default (lib: Lib) => {
         throw new ERR_INVALID_ARG_TYPE("address", ["string", "falsy"], address)
       }
 
-      this._healthCheck()
-
       if (this._bindState === Bind.BIND_STATE_UNBOUND) {
         this.bind({ port: 0, exclusive: true }, null)
       }
@@ -175,8 +174,8 @@ export default (lib: Lib) => {
       if (list.length === 0) {
         list.push(Buffer.alloc(0))
       }
-      const host = address || (this.type === "udp4" ? "127.0.0.1" : "::1")
 
+      const host = address || (this.type === "udp4" ? "127.0.0.1" : "::1")
       this.schedule(new Send(this, list, port, host, callback))
     }
 
@@ -195,18 +194,27 @@ export default (lib: Lib) => {
       }
     }
     async awake() {
-      const { workQueue } = this
-      let index = 0
-      while (index < workQueue.length) {
-        const task = workQueue[index++]
-        await task.perform()
+      if (this.isIdle) {
+        this.isIdle = false
+        const { workQueue } = this
+        let index = 0
+        while (index < workQueue.length) {
+          const task = workQueue[index++]
+          await task.perform()
+        }
+        workQueue.length = 0
+        this.isIdle = true
       }
-      workQueue.length = 0
-      this.isIdle = true
     }
 
     address() {
-      return this._healthCheck().address
+      const { host, port, family } = this._healthCheck().address
+      return {
+        address: host,
+        host,
+        port,
+        family: toNodeFamily(family)
+      }
     }
 
     setMulticastLoopback(flag: boolean) {
@@ -272,8 +280,6 @@ export default (lib: Lib) => {
       let [port_, address_, callback] = args
       let port = port_
 
-      this._healthCheck()
-
       if (this._bindState !== Bind.BIND_STATE_UNBOUND)
         throw new ERR_SOCKET_ALREADY_BOUND()
 
@@ -303,53 +309,71 @@ export default (lib: Lib) => {
         else address = "::"
       }
 
-      // resolve address first
-      this.createSocket(address, port)
+      this.schedule(new Spawn(this, address, port))
 
       return this
     }
-    async createSocket(address: string, port?: number) {
+  }
+
+  class Spawn {
+    socket: Socket
+    address: string
+    port: number
+    constructor(socket: Socket, address: string, port: number) {
+      this.socket = socket
+      this.address = address
+      this.port = port
+    }
+    async perform() {
+      const { socket, address, port } = this
       try {
-        const record = await lib.dns.resolve(address)
+        const record = await socket.dns.resolve(address)
         const host = record.addresses[0]
-        const addressReuse = this._reuseAddr
+        const addressReuse = socket._reuseAddr
         const options =
           port != undefined && port !== 0
             ? { host, port, addressReuse }
             : { host, addressReuse }
 
         const _handle = await lib.UDPSocket.create(options)
-        this._handle = _handle
-        this.emit("listening", this)
+        socket._handle = _handle
+        socket.emit("listening", this)
+        listen(socket, _handle)
       } catch (error) {
-        this._bindState = Bind.BIND_STATE_UNBOUND
-        this.emit("error", error)
+        socket._bindState = Bind.BIND_STATE_UNBOUND
+        socket.emit("error", error)
       }
     }
   }
-
   class Send {
     socket: Socket
     list: Buffer[]
     port: number
-    host: string
+    address: string
     callback: ?(?Error) => void
-    constructor(socket: Socket, list, port: number, host: string, callback) {
+    constructor(socket: Socket, list, port: number, address: string, callback) {
       this.socket = socket
       this.list = list
       this.port = port
-      this.host = host
+      this.address = address
       this.callback = callback
     }
     async perform() {
-      const { socket, list, port, host, callback } = this
+      const { socket, list, port, address, callback } = this
       const { _handle } = socket
+      const host = (await socket.dns.resolve(address)).addresses[0]
+
       if (_handle) {
         try {
           for (const { buffer } of list) {
             await lib.UDPSocket.send(_handle, host, port, buffer)
           }
+
+          // As far as I can tell there is no way to tell when send message
+          // was drained https://github.com/mozilla/gecko-dev/blob/86897859913403b68829dbf9a154f5a87c4b0638/dom/webidl/UDPSocket.webidl#L39
+          // There for we just wait 20ms instead.
           if (callback) {
+            await new Promise(resolve => setTimeout(resolve, 20))
             callback(null)
           }
         } catch (error) {
@@ -372,11 +396,23 @@ export default (lib: Lib) => {
         const handle = socket._healthCheck()
         socket._handle = null
         await lib.UDPSocket.close(handle)
-        socket.emit("close")
+        // socket.emit("close")
       } catch (error) {
         socket.emit("error", error)
       }
     }
+  }
+
+  const listen = async function(socket, handle) {
+    for await (const { data, from } of lib.UDPSocket.messages(handle)) {
+      socket.emit("message", Buffer.from(data), {
+        address: from.host,
+        family: toNodeFamily(from.family),
+        port: from.port,
+        size: data.byteLength
+      })
+    }
+    socket.emit("close")
   }
 
   const createSocket = (
@@ -554,3 +590,26 @@ function fixBufferList(list) {
 
   return newlist
 }
+
+const toNodeFamily = family => (family === 2 ? "udp6" : "udp4")
+
+interface Lookup {
+  (hostname: string, LookupCallback): void;
+}
+
+interface LookupCallback {
+  (?Error, address: string, family: 4 | 6): void;
+}
+
+const fromNodeLookup = (lookup: Lookup) => ({
+  resolve: (hostname: string) =>
+    new Promise((resolve, reject) => {
+      lookup(hostname, (error, address, family) => {
+        if (error) {
+          reject(error)
+        } else {
+          resolve({ addresses: [address] })
+        }
+      })
+    })
+})

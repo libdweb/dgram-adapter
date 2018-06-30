@@ -1,6 +1,7 @@
 {
   "sourceMaps": "inline",
   "comments": false,
+  "plugins": ["syntax-async-generators"],
   "env": {
     "development": {
       "sourceMaps": "inline",
