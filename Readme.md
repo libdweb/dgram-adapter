@@ -17,6 +17,10 @@ const dgram = drgamify(browser)
 
     npm install @libdweb/node-dgram
 
+## Hack
+
+You can run example from test directory by running `npm run demo` after `npm install`
+
 [travis.icon]: https://travis-ci.org/Gozala/node-dgram.svg?branch=master
 [travis.url]: https://travis-ci.org/Gozala/node-dgram
 [version.icon]: https://img.shields.io/npm/v/node-dgram.svg
