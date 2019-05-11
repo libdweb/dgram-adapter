@@ -4,7 +4,7 @@ import type {
   UDPSocketManager,
   UDPSocket,
   SocketOptions
-} from "libdweb/src/UDPSocket/UDPSocket"
+} from "libdweb/src/toolkit/components/extensions/interface/udp"
 import EventEmitter from "events"
 import { Buffer } from "buffer"
 import assert from "assert"
@@ -208,10 +208,10 @@ export default (lib: Lib) => {
     }
 
     address() {
-      const { host, port, family } = this._healthCheck().address
+      const { address, port, family } = this._healthCheck().address
       return {
-        address: host,
-        host,
+        address,
+        host: address,
         port,
         family: toNodeFamily(family)
       }
@@ -221,7 +221,7 @@ export default (lib: Lib) => {
       const socket = this._healthCheck()
 
       try {
-        lib.UDPSocket.setMulticastLoopback(socket, flag)
+        socket.setMulticastLoopback(flag)
       } catch (error) {
         throw errnoException(error, "setMulticastLoopback")
       }
@@ -239,10 +239,14 @@ export default (lib: Lib) => {
       }
 
       try {
-        lib.UDPSocket.setMulticastInterface(socket, interfaceAddress)
+        socket.setMulticastInterface(interfaceAddress)
       } catch (error) {
         throw errnoException(error, "setMulticastInterface")
       }
+    }
+
+    setMulticastTTL(ttl: number) {
+      // noop
     }
 
     addMembership(multicastAddress: string, interfaceAddress?: string) {
@@ -253,7 +257,7 @@ export default (lib: Lib) => {
       }
 
       try {
-        lib.UDPSocket.addMembership(socket, multicastAddress, interfaceAddress)
+        socket.joinMulticast(multicastAddress, interfaceAddress)
       } catch (error) {
         throw errnoException(error, "addMembership")
       }
@@ -266,11 +270,7 @@ export default (lib: Lib) => {
       }
 
       try {
-        lib.UDPSocket.dropMembership(
-          socket,
-          multicastAddress,
-          interfaceAddress || undefined
-        )
+        socket.leaveMulticast(multicastAddress, interfaceAddress || undefined)
       } catch (error) {
         throw errnoException(error, "dropMembership")
       }
@@ -366,7 +366,7 @@ export default (lib: Lib) => {
       if (_handle) {
         try {
           for (const { buffer } of list) {
-            await lib.UDPSocket.send(_handle, host, port, buffer)
+            await _handle.send(host, port, buffer)
           }
 
           // As far as I can tell there is no way to tell when send message
@@ -395,7 +395,7 @@ export default (lib: Lib) => {
       try {
         const handle = socket._healthCheck()
         socket._handle = null
-        await lib.UDPSocket.close(handle)
+        await handle.close()
         // socket.emit("close")
       } catch (error) {
         socket.emit("error", error)
@@ -404,9 +404,9 @@ export default (lib: Lib) => {
   }
 
   const listen = async function(socket, handle) {
-    for await (const { data, from } of lib.UDPSocket.messages(handle)) {
+    for await (const [data, from] of handle.messages()) {
       socket.emit("message", Buffer.from(data), {
-        address: from.host,
+        address: from.address,
         family: toNodeFamily(from.family),
         port: from.port,
         size: data.byteLength
